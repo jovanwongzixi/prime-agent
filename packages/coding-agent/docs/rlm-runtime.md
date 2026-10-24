@@ -85,6 +85,21 @@ Startup spawns `python -m rlm.repl` and exchanges newline-delimited JSON over st
 
 The manager owns the child process and a bounded stderr tail. Shutdown sends a `shutdown` request, waits for the process to exit, and terminates it as a fallback. Persistent sessions may snapshot the kernel namespace into their session artifact directory for revival.
 
+### Cell timeouts
+
+The `ipython` tool limits each user cell to 300 seconds by default. Set its optional `timeout` argument, in seconds, to allow intentionally longer work. Values must be finite and positive, between 1 millisecond and 2,147,483,647 milliseconds when converted to the host timer. The host starts the clock immediately before dispatch, after startup, restoration, bootstrap, queue wait, and busy-kernel checks. Request-write time counts toward the limit; internal requests retain their existing limits. This deadline does not bound initial runtime bootstrap.
+
+At the deadline, the host interrupts that request and waits one second for completion. If the request finishes, the kernel is preserved. Otherwise the host kills this session's kernel and cleans up its owned `bash()` process groups. The tool returns a `TimeoutError` with captured output and the kernel outcome, even if the cell completed successfully after the deadline. User abort retains its existing behavior and does not automatically kill a busy kernel. A cell timeout does not abort the AgentSession, parent, siblings, or admitted child agents.
+
+The timeout message asks whether the long runtime was intended and suggests a larger `timeout` or an explicit background process. Inspect output and side effects before rerunning: timeout does not undo file writes or dispatched host requests, and the tool never retries the cell automatically. For suitable commands, retain a `bash()` handle and end the cell, then inspect or await that process in a later call:
+
+```python
+job = bash("long-running-command")
+print(job.pid)
+```
+
+Detaching a running tool promise leaves the serial kernel occupied, and wrapping synchronous Python in an asyncio task does not make it nonblocking. After a hard kill, live variables, imports, and tasks are lost. The next Python call starts a replacement and attempts normal snapshot restoration where configured; that snapshot may predate the timed-out cell.
+
 ## Stdio Transport
 
 Requests flow to the runtime on stdin and events return on stdout, one JSON object per line:

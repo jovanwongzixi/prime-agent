@@ -1,15 +1,70 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	AGENT_MESSAGE_DISPLAY_MIME,
 	ATTACHMENT_DISPLAY_MIME,
+	createDeferred,
 	DIFF_DISPLAY_MIME,
 	type HostRequestHandlers,
 	ReplKernelManager,
 } from "../src/core/kernel/index.js";
+import * as childProcesses from "../src/utils/child-process.js";
+
+it.each([false, true])("bounds a cell across the process boundary (blocked=%s)", async (blocked) => {
+	const dir = mkdtempSync(join(tmpdir(), "prime-agent-repl-timeout-"));
+	const runtime = `
+const emit = (event) => process.stdout.write(JSON.stringify(event) + "\\n");
+let active;
+require("node:readline").createInterface({ input: process.stdin }).on("line", (line) => {
+  const req = JSON.parse(line);
+  if (req.type === "interrupt" && active === req.id) {
+    emit({ event: "done", id: req.id, status: "ok" });
+    active = undefined;
+  } else if (req.type === "execute") {
+    emit({ event: "stdout", id: req.id, text: req.code });
+    if (req.code === "hang") {
+      active = req.id;
+      if (${blocked}) while (true) {}
+    } else emit({ event: "done", id: req.id, status: "ok" });
+  } else if (req.type === "shutdown") process.exit(0);
+});
+emit({ event: "ready", protocol: 3 });
+`;
+	let exited: Promise<unknown> = Promise.resolve();
+	const spawnSpy = vi.spyOn(childProcesses, "spawnHidden").mockImplementation((_command, _args, opts) => {
+		const child = spawn(process.execPath, ["-e", runtime], opts ?? {});
+		exited = once(child, "exit");
+		return child;
+	});
+	const manager = new ReplKernelManager({ python: process.execPath, cwd: dir });
+	try {
+		await manager.start();
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const started = createDeferred<void>();
+		const call = manager.execute("hang", { timeoutMs: 100, onStream: () => started.resolve() });
+		await started.promise;
+		await vi.advanceTimersByTimeAsync(100);
+		if (blocked) await vi.advanceTimersByTimeAsync(1000);
+		const result = await call;
+		expect(result).toMatchObject({ status: "error", stdout: "hang", kernelKilled: blocked });
+		expect(result.error?.ename).toBe("TimeoutError");
+		expect(manager.isDefunct).toBe(blocked);
+		if (!blocked) {
+			await expect(manager.execute("next", { timeoutMs: 100 })).resolves.toMatchObject({ status: "ok" });
+		}
+		expect(vi.getTimerCount()).toBe(0);
+	} finally {
+		vi.useRealTimers();
+		await manager.kill();
+		await exited;
+		spawnSpy.mockRestore();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
 
 function resolveReplPython(): string | null {
 	const candidates = [

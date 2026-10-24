@@ -370,6 +370,38 @@ describe("IpythonKernelProvisioner", () => {
 
 		expect(result.details.backgroundOutput).toBe("bg-line");
 		expect(result.content).toEqual([{ type: "text", text: "ok\n[background output (unattributed)]\nbg-line" }]);
+		expect(execute).toHaveBeenCalledWith("x = 1", expect.objectContaining({ timeoutMs: 300_000 }));
+	});
+
+	it.each([0, -1, NaN, Infinity, 0.0001, 2_147_483.648])("rejects invalid timeout %s", async (timeout) => {
+		const ensure = vi.fn();
+		const tool = createIpythonToolDefinition(tempDir, {
+			provisioner: { ensure } as unknown as IpythonKernelProvisioner,
+		});
+		const ctx = {} as ExtensionContext;
+		const call = tool.execute("invalid", { code: "work()", timeout }, undefined, undefined, ctx);
+		await expect(call).rejects.toThrow(/timeout/i);
+		expect(ensure).not.toHaveBeenCalled();
+	});
+
+	it.each([false, true])("reports timeout recovery without retrying (kernel killed: %s)", async (kernelKilled) => {
+		const execute = vi.fn<KernelClient["execute"]>().mockResolvedValue({
+			...okExecuteResult(),
+			status: "error",
+			kernelKilled,
+			error: { ename: "TimeoutError", evalue: "deadline exceeded", traceback: [] },
+		});
+		const provisioner = { ensure: async () => ({ execute }) } as unknown as IpythonKernelProvisioner;
+		const tool = createIpythonToolDefinition(tempDir, { provisioner });
+		const ctx = {} as ExtensionContext;
+		const result = await tool.execute("timeout", { code: "work()", timeout: 1 }, undefined, undefined, ctx);
+		const text = result.content[0].type === "text" ? result.content[0].text : "";
+		expect(result.details).toMatchObject({ status: "error", errorEname: "TimeoutError", kernelKilled });
+		expect(text).toMatch(/ok[\s\S]*intended[\s\S]*larger.*timeout[\s\S]*background/i);
+		expect(text).toMatch(/1-second limit[\s\S]*default.*300 seconds \(5 minutes\)/i);
+		expect(text).toMatch(kernelKilled ? /lost/i : /preserved/i);
+		expect(text).toContain(result.details.error?.evalue);
+		expect(execute).toHaveBeenCalledTimes(1);
 	});
 
 	it("lets the user wait when an interrupted kernel is still busy", async () => {
@@ -385,12 +417,13 @@ describe("IpythonKernelProvisioner", () => {
 		const { ctx, setWorkingMessage } = createBusyKernelContext(select, { throwWorkingMessage: true });
 		const tool = createIpythonToolDefinition(tempDir, { provisioner });
 
-		const result = await tool.execute("tool-call", { code: "x = 1" }, undefined, undefined, ctx);
+		const result = await tool.execute("tool-call", { code: "x = 1", timeout: 900 }, undefined, undefined, ctx);
 
 		expect(result.details.status).toBe("ok");
 		expect(result.details.kernelRestarted).toBe(false);
 		expect(ensure).toHaveBeenCalledTimes(2);
 		expect(kill).not.toHaveBeenCalled();
+		expect(execute).toHaveBeenLastCalledWith("x = 1", expect.objectContaining({ timeoutMs: 900_000 }));
 		expect(select).toHaveBeenCalledWith(
 			expect.stringContaining("previous cell has not stopped"),
 			["Wait and preserve state", "Kill kernel and restart"],

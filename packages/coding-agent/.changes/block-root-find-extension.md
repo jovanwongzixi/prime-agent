@@ -1,0 +1,1 @@
+- Added an example extension that blocks direct root-wide `find` calls in bash and Python cells.

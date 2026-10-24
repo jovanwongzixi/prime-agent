@@ -48,6 +48,7 @@ import {
 	type KernelStartOptions,
 	liveKernels,
 	MAX_ATTACHMENT_DATA_CHARS,
+	MAX_EXECUTION_TIMEOUT_MS,
 	MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS,
 	parseAttachmentDisplay,
 	parseDiffDisplay,
@@ -135,6 +136,8 @@ interface ActiveExecution {
 	backgroundOutput: string;
 	backgroundOutputTruncated: boolean;
 	error?: ExecuteResult["error"];
+	timeoutError?: ExecuteResult["error"];
+	kernelKilled?: boolean;
 	status: ExecuteResult["status"];
 	doneFields?: Record<string, unknown>;
 	settled: boolean;
@@ -977,6 +980,12 @@ export class ReplKernelManager {
 	}
 
 	async execute(code: string, opts: ExecuteOptions = {}): Promise<ExecuteResult> {
+		if (
+			opts.timeoutMs !== undefined &&
+			(!Number.isFinite(opts.timeoutMs) || opts.timeoutMs < 1 || opts.timeoutMs > MAX_EXECUTION_TIMEOUT_MS)
+		) {
+			throw new Error(`Execution timeout must be between 1 and ${MAX_EXECUTION_TIMEOUT_MS} milliseconds`);
+		}
 		await this.waitForProtocolRepair(opts.signal);
 		const result = await this.enqueueExecute(code, opts);
 		// Refresh the on-disk snapshot after real work so a later resume (or a
@@ -1105,6 +1114,9 @@ export class ReplKernelManager {
 		this.pendingBackgroundOutput = "";
 		this.pendingBackgroundOutputTruncated = false;
 		let abortTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
+		// Internal request limits use abort signals and preserve a busy kernel.
+		// User cell deadlines need a separate cause so only they escalate to kill.
+		let executionTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
 		const clearAbortTimer = () => {
 			if (abortTimer) {
 				globalThis.clearTimeout(abortTimer);
@@ -1115,18 +1127,31 @@ export class ReplKernelManager {
 			if (this.activeExecution !== execution) {
 				return;
 			}
+			if (execution.timeoutError) {
+				execution.kernelKilled = true;
+				// kill() cleans up synchronously before the execution queue can resume.
+				void this.kill().catch((error) =>
+					this.appendKernelDiagnostic(`timeout cleanup failed: ${errorMessage(error)}`),
+				);
+				return;
+			}
 			execution.status = "aborted";
 			// The execution stays active until its done event arrives; clearing it
 			// early would let a new cell race the interrupted one (see busy-after-interrupt).
 			this.resolveExecution(execution, { clearActive: false });
 		};
-		const onAbort = () => {
+		const interruptWithGrace = () => {
 			void this.interrupt().catch(() => undefined);
 			clearAbortTimer();
 			abortTimer = globalThis.setTimeout(forceAbort, KERNEL_ABORT_GRACE_MS);
 			if (abortTimer && typeof abortTimer === "object" && "unref" in abortTimer) {
 				abortTimer.unref();
 			}
+		};
+		const onAbort = () => {
+			if (execution.timeoutError) return;
+			if (executionTimer) globalThis.clearTimeout(executionTimer);
+			interruptWithGrace();
 		};
 
 		try {
@@ -1138,6 +1163,20 @@ export class ReplKernelManager {
 			if (!opts.internal) {
 				this.lastCellCode = code;
 			}
+			if (opts.timeoutMs !== undefined && !opts.signal?.aborted) {
+				const timeoutMs = opts.timeoutMs;
+				executionTimer = globalThis.setTimeout(() => {
+					if (this.activeExecution !== execution || execution.settled || opts.signal?.aborted) return;
+					execution.timeoutError = {
+						ename: "TimeoutError",
+						evalue: `Python execution exceeded its ${timeoutMs / 1000}-second limit`,
+						traceback: [],
+					};
+					execution.kernelKilled = false;
+					interruptWithGrace();
+				}, timeoutMs);
+				executionTimer.unref?.();
+			}
 			try {
 				const sendPromise = this.writeLine({ ...requestFields, id: requestId });
 				sendPromise.catch(() => undefined);
@@ -1146,6 +1185,13 @@ export class ReplKernelManager {
 					await sendPromise;
 				}
 			} catch (error) {
+				if (execution.timeoutError) {
+					if (this.activeExecution === execution) {
+						execution.kernelKilled = true;
+						await this.kill();
+					}
+					return await result.promise;
+				}
 				if (this.activeExecution === execution) {
 					this.activeExecution = undefined;
 				}
@@ -1154,6 +1200,7 @@ export class ReplKernelManager {
 			return await result.promise;
 		} finally {
 			clearAbortTimer();
+			if (executionTimer) globalThis.clearTimeout(executionTimer);
 			opts.signal?.removeEventListener("abort", onAbort);
 		}
 	}
@@ -1199,7 +1246,7 @@ export class ReplKernelManager {
 		if (!execution.settled) {
 			execution.settled = true;
 			this.completedExecutions += 1;
-			if (execution.opts.onLateSentAgentMessage) {
+			if (execution.opts.onLateSentAgentMessage && !execution.kernelKilled) {
 				this.registerLateSentAgentMessageHandler(execution.requestId, execution.opts.onLateSentAgentMessage);
 			}
 
@@ -1213,7 +1260,8 @@ export class ReplKernelManager {
 				result = `${result.slice(0, execution.maxChars)}\n[... output truncated at ${execution.maxChars} chars ...]`;
 			}
 
-			if (execution.opts.signal?.aborted) status = "aborted";
+			if (execution.timeoutError) status = "error";
+			else if (execution.opts.signal?.aborted) status = "aborted";
 
 			let backgroundOutput = execution.backgroundOutput;
 			if (execution.backgroundOutputTruncated) {
@@ -1228,7 +1276,8 @@ export class ReplKernelManager {
 				attachments: execution.attachments.length > 0 ? execution.attachments : undefined,
 				sentAgentMessages: execution.sentAgentMessages.length > 0 ? execution.sentAgentMessages : undefined,
 				backgroundOutput: backgroundOutput.length > 0 ? backgroundOutput : undefined,
-				error: execution.error,
+				error: execution.timeoutError ?? execution.error,
+				kernelKilled: execution.kernelKilled,
 				status,
 				durationMs: Date.now() - execution.started,
 				doneFields: execution.doneFields,
@@ -1271,6 +1320,13 @@ export class ReplKernelManager {
 	private rejectActiveExecution(error: Error): void {
 		const execution = this.activeExecution;
 		if (!execution) {
+			return;
+		}
+		if (execution.timeoutError) {
+			// Teardown and protocol repair must preserve the latched timeout and output,
+			// rather than replacing them with a generic shutdown/protocol rejection.
+			execution.kernelKilled = true;
+			this.resolveExecution(execution, { clearActive: true });
 			return;
 		}
 		this.activeExecution = undefined;

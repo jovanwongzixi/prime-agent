@@ -1,0 +1,2 @@
+- Added a five-minute default timeout for Python cells, with longer per-call limits, targeted interruption, kernel recovery, and guidance for intentional long-running work.
+- Fixed expanded Python cells hiding timeout recovery guidance.

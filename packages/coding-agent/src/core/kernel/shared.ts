@@ -10,6 +10,8 @@ export const SNAPSHOT_EXECUTION_TIMEOUT_MS = 5000;
 /** Restore deserializes everything a snapshot serializes: bound like the repair step. */
 export const RESTORE_EXECUTION_TIMEOUT_MS = 30_000;
 export const KERNEL_ABORT_GRACE_MS = 1000;
+/** Node clamps larger timer delays to one millisecond rather than waiting longer. */
+export const MAX_EXECUTION_TIMEOUT_MS = 2 ** 31 - 1;
 export const KERNEL_BUSY_REUSE_WAIT_MS = 5000;
 export const KERNEL_BUSY_INTERRUPT_INTERVAL_MS = 500;
 export const MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS = 256;
@@ -72,6 +74,8 @@ export interface KernelStartOptions {
 export interface ExecuteOptions {
 	/** Aborting interrupts the kernel out-of-band. */
 	signal?: AbortSignal;
+	/** Dispatch deadline in milliseconds; interrupt, then kill if the cell does not stop. */
+	timeoutMs?: number;
 	onStream?: (chunk: string, name: "stdout" | "stderr") => void;
 	onLateSentAgentMessage?: (message: KernelSentAgentMessage) => void;
 	/** Cap stdout / stderr / result at this many characters. Default 65536. */
@@ -147,6 +151,8 @@ export interface ExecuteResult {
 	backgroundOutput?: string;
 	status: "ok" | "error" | "aborted";
 	error?: { ename: string; evalue: string; traceback: string[] };
+	/** Present on host execution timeout results: whether the kernel's live state was lost. */
+	kernelKilled?: boolean;
 	durationMs: number;
 }
 

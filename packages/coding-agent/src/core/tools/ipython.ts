@@ -16,6 +16,7 @@ import {
 	type KernelClient,
 	type KernelDiffDisplay,
 	type KernelSentAgentMessage,
+	MAX_EXECUTION_TIMEOUT_MS,
 	ReplKernelManager,
 } from "../kernel/index.js";
 import { manifestPathIn, type RestoreResult, snapshotPathIn } from "../kernel/state-snapshot.js";
@@ -186,11 +187,21 @@ if _PRIME_AGENT_SKILL_IMPORT_ERRORS:
 `.trim();
 }
 
+const DEFAULT_IPYTHON_TIMEOUT_SECONDS = 300;
+
 const ipythonSchema = Type.Object({
 	code: Type.String({
 		description:
 			"Python code to execute in the persistent Python REPL. Use the target project's own environment for project imports, tests, scripts, CLIs, and dependency checks instead of direct kernel imports.",
 	}),
+	timeout: Type.Optional(
+		Type.Number({
+			minimum: 0.001,
+			maximum: MAX_EXECUTION_TIMEOUT_MS / 1000,
+			description:
+				"Execution timeout in seconds (default 300). Increase for intentionally long work, or start a background bash() process and return from the cell.",
+		}),
+	),
 });
 
 const BUSY_KERNEL_WAIT_CHOICE = "Wait and preserve state";
@@ -308,6 +319,8 @@ export interface IpythonToolDetails {
 	sentAgentMessages?: KernelSentAgentMessage[];
 	/** True when this result came after killing and restarting a busy kernel. */
 	kernelRestarted?: boolean;
+	/** Whether an execution timeout killed the kernel and lost its live state. */
+	kernelKilled?: boolean;
 	error?: {
 		ename: string;
 		evalue: string;
@@ -627,6 +640,7 @@ async function executeWithBusyKernelChoice(
 	reportStartupProgress: KernelBootstrapProgressHandler,
 	toolCallId: string,
 	code: string,
+	timeoutMs: number,
 	signal: AbortSignal | undefined,
 	onStream: (chunk: string, name: "stdout" | "stderr") => void,
 	onWorkingMessage: (message?: string) => void,
@@ -640,6 +654,7 @@ async function executeWithBusyKernelChoice(
 			return {
 				result: await m.execute(code, {
 					signal,
+					timeoutMs,
 					onStream,
 					onLateSentAgentMessage: onLateSentAgentMessage
 						? (message) => onLateSentAgentMessage(toolCallId, message)
@@ -691,6 +706,11 @@ export function createIpythonToolDefinition(
 		executionMode: "sequential",
 		parameters: ipythonSchema,
 		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+			const timeout = params.timeout ?? DEFAULT_IPYTHON_TIMEOUT_SECONDS;
+			const timeoutMs = timeout * 1000;
+			if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_EXECUTION_TIMEOUT_MS) {
+				throw new Error(`timeout must be between 0.001 and ${MAX_EXECUTION_TIMEOUT_MS / 1000} seconds`);
+			}
 			let hasWorkingMessage = false;
 			const setToolWorkingMessage = (message?: string) => {
 				setWorkingMessage(ctx, message);
@@ -710,6 +730,7 @@ export function createIpythonToolDefinition(
 					reportStartupProgress,
 					toolCallId,
 					params.code,
+					timeoutMs,
 					signal,
 					(chunk) => {
 						onUpdate?.({
@@ -722,11 +743,29 @@ export function createIpythonToolDefinition(
 					ctx,
 				);
 
+				let error = r.error;
 				let text = r.stdout;
 				if (r.stderr) text += (text ? "\n" : "") + r.stderr;
 				if (r.result) text += (text ? "\n" : "") + r.result;
 				if (r.status === "error" && r.error) {
 					text += (text ? "\n" : "") + r.error.traceback.join("\n");
+				}
+				if (r.kernelKilled !== undefined) {
+					const outcome = r.kernelKilled
+						? "The kernel was killed and its live variables, imports, and tasks were lost. " +
+							"The next call starts a replacement and attempts snapshot restoration where available; recent state may not survive."
+						: "The request finished after the interrupt and the kernel was preserved. " +
+							"Inspect its output and state before deciding whether anything needs rerunning.";
+					const evalue = [
+						`This ipython tool call was taking a very long time and exceeded its ${timeout}-second limit.`,
+						`The default ipython timeout is ${DEFAULT_IPYTHON_TIMEOUT_SECONDS} seconds (${DEFAULT_IPYTHON_TIMEOUT_SECONDS / 60} minutes). Set the timeout argument explicitly to change it.`,
+						"Was this long runtime intended? If so, after checking what already completed, rerun with a larger timeout,",
+						"or launch the long-running process in the background using a bash() handle and return from the cell.",
+						"Do not blindly repeat work that may already have produced side effects.",
+						outcome,
+					].join("\n");
+					error = { ename: "TimeoutError", evalue, traceback: [] };
+					text += `${text ? "\n" : ""}TimeoutError: ${evalue}`;
 				}
 				if (r.backgroundOutput) {
 					text += `${text ? "\n" : ""}[background output (unattributed)]\n${r.backgroundOutput}`;
@@ -752,7 +791,8 @@ export function createIpythonToolDefinition(
 						attachments: r.attachments,
 						sentAgentMessages: r.sentAgentMessages,
 						kernelRestarted,
-						error: r.error,
+						kernelKilled: r.kernelKilled,
+						error,
 					},
 					isError: r.status === "error" || r.status === "aborted",
 				};

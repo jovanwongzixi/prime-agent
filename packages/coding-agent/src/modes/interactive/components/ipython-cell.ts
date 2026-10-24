@@ -328,6 +328,10 @@ function formatIpythonErrorSummary(error: IpythonErrorDetails): string {
 	if (!normalizedValue.trim()) {
 		return error.ename;
 	}
+	// Host deadlines have no Python traceback; their recovery advice is in evalue.
+	if (error.ename === "TimeoutError") {
+		return `${error.ename}: ${normalizedValue}`;
+	}
 	const value = summarizeErrorDetails(normalizedValue);
 	if (value === "Error") {
 		return error.ename;

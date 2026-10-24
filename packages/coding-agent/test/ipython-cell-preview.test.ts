@@ -67,18 +67,22 @@ describe("IPythonCellComponent collapsed preview styling", () => {
 		expect(raw).not.toContain(theme.fg("bashMode", "!git status --short"));
 	});
 
-	it("keeps syntax highlighting on the expanded python code block", () => {
+	it("keeps syntax highlighting and timeout guidance in expanded python cells", () => {
 		useTruecolor();
+		const evalue =
+			"Long-running call exceeded the execution deadline; was this intended?\nUse a larger timeout or a background process.";
 		const raw = renderCell({
 			code: 'print("hello world")',
 			content: [{ type: "text", text: "hello world" }],
-			details: { status: "ok", durationMs: 12, stdout: "hello world" },
+			details: { status: "error", error: { ename: "TimeoutError", evalue, traceback: [] } },
 			executionStarted: true,
 			argsComplete: true,
 			expanded: true,
 		});
 
 		expect(raw).toContain(theme.getFgAnsi("syntaxString"));
+		expect(raw).toContain("was this intended?");
+		expect(raw).toContain("Use a larger timeout or a background process.");
 	});
 
 	it("keeps bash-mode green on the expanded bash code block", () => {

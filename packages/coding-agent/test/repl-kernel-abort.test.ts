@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	AGENT_MESSAGE_DISPLAY_MIME,
+	createDeferred,
 	type KernelSentAgentMessage,
 	ReplKernelManager,
 } from "../src/core/kernel/index.js";
@@ -179,27 +180,40 @@ describe("ReplKernelManager abort handling", () => {
 		expect(kernelKill).toHaveBeenCalledWith("SIGTERM");
 	});
 
-	it("settles an aborted execution when the stdin write never resolves", async () => {
-		vi.useFakeTimers();
-		const interruptWrites: Record<string, unknown>[] = [];
-		const writeLine = vi.fn((request: Record<string, unknown>) => {
-			if (request.type === "interrupt") {
-				interruptWrites.push(request);
-				return Promise.resolve();
+	it.each(["abort-first", "timeout-first", "stalled-write"])(
+		"settles a stalled stdin write with scoped cancellation (%s)",
+		async (mode) => {
+			vi.useFakeTimers();
+			const sent = createDeferred<void>();
+			const controller = new AbortController();
+			const interruptWrites: Record<string, unknown>[] = [];
+			const { manager } = runningManagerWith((request) => {
+				if (request.type === "execute") sent.resolve();
+				if (request.type === "interrupt") {
+					interruptWrites.push(request);
+					return Promise.resolve();
+				}
+				return new Promise<void>(() => {});
+			});
+			try {
+				const call = manager.execute("run", { timeoutMs: 100, signal: controller.signal });
+				await sent.promise;
+				if (mode === "abort-first") controller.abort();
+				await vi.advanceTimersByTimeAsync(100);
+				if (mode === "timeout-first") controller.abort();
+				await vi.advanceTimersByTimeAsync(1000);
+				await expect(call).resolves.toMatchObject(
+					mode === "abort-first"
+						? { status: "aborted" }
+						: { status: "error", error: { ename: "TimeoutError" }, kernelKilled: true },
+				);
+				expect(manager.isDefunct).toBe(mode !== "abort-first");
+				expect(interruptWrites.length).toBeGreaterThan(0);
+			} finally {
+				manager.disposeSync();
 			}
-			return new Promise<void>(() => {});
-		});
-		const { manager } = runningManagerWith(writeLine);
-		const controller = new AbortController();
-
-		const executePromise = manager.execute("while True: pass", { signal: controller.signal });
-		await waitForCalls(writeLine, 1);
-		controller.abort();
-		await vi.advanceTimersByTimeAsync(1000);
-
-		await expect(executePromise).resolves.toMatchObject({ status: "aborted" });
-		expect(interruptWrites.length).toBeGreaterThan(0);
-	});
+		},
+	);
 
 	it("fails a later execution fast when the interrupted cell never settles", async () => {
 		vi.useFakeTimers();
