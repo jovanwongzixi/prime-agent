@@ -26,6 +26,7 @@ export interface IPythonCellContentBlock {
 
 export interface IPythonCellState {
 	code: string;
+	timeoutSeconds?: number;
 	backgroundShell?: BackgroundShellHandle;
 	shellCompletion?: ShellCompletion;
 	shellCompletionAmbiguous?: boolean;
@@ -135,6 +136,14 @@ export function getIpythonCodeFromArgs(args: unknown): string {
 	}
 	const code = (args as { code?: unknown }).code;
 	return typeof code === "string" ? code : "";
+}
+
+export function getIpythonTimeoutFromArgs(args: unknown): number | undefined {
+	if (!args || typeof args !== "object" || !("timeout" in args)) {
+		return undefined;
+	}
+	const timeout = (args as { timeout?: unknown }).timeout;
+	return typeof timeout === "number" && Number.isFinite(timeout) && timeout > 0 ? timeout : undefined;
 }
 
 function readDetails(details: unknown): IpythonDetails {
@@ -412,6 +421,10 @@ export class IPythonCellComponent implements Component {
 		const counts = this.lineCounts(details);
 		if (counts) {
 			parts.push(theme.fg("dim", counts));
+		}
+
+		if (this.state.timeoutSeconds !== undefined) {
+			parts.push(theme.fg("dim", `timeout ${this.state.timeoutSeconds}s`));
 		}
 
 		const duration = formatDuration(details.durationMs);

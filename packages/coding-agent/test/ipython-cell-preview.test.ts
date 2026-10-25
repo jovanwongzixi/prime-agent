@@ -1,5 +1,7 @@
+import type { TUI } from "@earendil-works/pi-tui";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { IPythonCellComponent } from "../src/modes/interactive/components/ipython-cell.js";
+import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
 import { initTheme, preloadCodeHighlighter, theme } from "../src/modes/interactive/theme/theme.js";
 
 type CellState = ConstructorParameters<typeof IPythonCellComponent>[0];
@@ -30,9 +32,21 @@ describe("IPythonCellComponent collapsed preview styling", () => {
 		initTheme("dark");
 	}
 
-	function renderCell(state: CellState): string {
-		return new IPythonCellComponent(state).render(100).join("\n");
-	}
+	const renderCell = (state: CellState): string => new IPythonCellComponent(state).render(100).join("\n");
+
+	it.each([false, true])("shows explicit IPython timeouts in the %s layout, updates, and replay", (expanded) => {
+		useTruecolor();
+		const args = { code: "pass", timeout: 15 };
+		const tool = new ToolExecutionComponent("ipython", "cell", args, {}, undefined, {} as TUI, "/tmp");
+		tool.updateResult({ content: [{ type: "text", text: "3" }], details: { status: "ok" }, isError: false });
+		tool.setExpanded(expanded);
+		const renderedTimeout = () => tool.render(100)[0].match(/timeout ([\d.]+)s/)?.[1];
+		expect(renderedTimeout()).toBe("15");
+		for (const timeout of [undefined, 300, 0.5, 15, undefined]) {
+			tool.updateArgs({ code: "print(1)", ...(timeout === undefined ? {} : { timeout }) });
+			expect(renderedTimeout()).toBe(timeout?.toString());
+		}
+	});
 
 	it("renders the collapsed python preview plain and dim, without syntax colors", () => {
 		useTruecolor();

@@ -1,3 +1,4 @@
 - Added a five-minute default timeout for Python cells, with longer per-call limits, targeted interruption, kernel recovery, and guidance for intentional long-running work.
 - Fixed expanded Python cells hiding timeout recovery guidance.
 - Added `ipythonTimeoutSeconds` in global and project settings to configure the default Python cell timeout, with per-call overrides and guidance reflecting the configured value.
+- Added explicit per-call timeouts to Python cell headers in collapsed and expanded views.

@@ -9,7 +9,7 @@ import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/rend
 import type { AgentConnectionToolDefinition } from "../../agent-connection/index.js";
 import { type Theme, theme } from "../theme/theme.js";
 import { getWorkingPulseFrame, workingIconFrame } from "../theme/working-icon.js";
-import { getIpythonCodeFromArgs, IPythonCellComponent } from "./ipython-cell.js";
+import { getIpythonCodeFromArgs, getIpythonTimeoutFromArgs, IPythonCellComponent } from "./ipython-cell.js";
 import { expandCollapseHint } from "./keybinding-hints.js";
 import {
 	type BackgroundShellHandle,
@@ -416,6 +416,7 @@ export class ToolExecutionComponent extends Container {
 			if (this.shouldUseIpythonRenderer()) {
 				const state = {
 					code: getIpythonCodeFromArgs(this.args),
+					timeoutSeconds: getIpythonTimeoutFromArgs(this.args),
 					backgroundShell: this.getBackgroundShellHandle(),
 					shellCompletion: this.shellCompletion,
 					shellCompletionAmbiguous: this.shellCompletionAmbiguous,

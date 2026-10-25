@@ -20,3 +20,8 @@ Design: [IPython watchdog implementation plan](ipython-watchdog-design.md).
 - Kept explicit per-call `timeout` values authoritative; the setting changes the default rather than imposing a maximum.
 - Updated the tool schema and recovery guidance to report the configured default.
 - Added coverage for settings precedence, validation, reload, and configured defaults with per-call overrides.
+
+### Explicit timeout display
+
+- Added `timeout Ns` to collapsed and expanded Python cell headers only when the tool-call arguments explicitly supply a finite positive timeout.
+- Kept calls using the configured default unlabeled and refreshed the label when streamed arguments change or saved calls are replayed.
