@@ -356,7 +356,7 @@ describe("IpythonKernelProvisioner", () => {
 		expect(internals.startupListeners.has(onProgress)).toBe(false);
 	});
 
-	it("surfaces backgroundOutput in details without changing model content", async () => {
+	it.each([undefined, 900])("surfaces backgroundOutput with configured timeout %s", async (timeoutSeconds) => {
 		const execute = vi
 			.fn<KernelClient["execute"]>()
 			.mockResolvedValueOnce({ ...okExecuteResult(), backgroundOutput: "bg-line" });
@@ -364,13 +364,17 @@ describe("IpythonKernelProvisioner", () => {
 		const ensure = vi.fn(async () => manager);
 		const kill = vi.fn(async () => {});
 		const provisioner = { ensure, kill } as unknown as IpythonKernelProvisioner;
-		const tool = createIpythonToolDefinition(tempDir, { provisioner });
+		const tool = createIpythonToolDefinition(tempDir, { provisioner, timeoutSeconds });
 
 		const result = await tool.execute("tool-call", { code: "x = 1" }, undefined, undefined, {} as ExtensionContext);
 
 		expect(result.details.backgroundOutput).toBe("bg-line");
 		expect(result.content).toEqual([{ type: "text", text: "ok\n[background output (unattributed)]\nbg-line" }]);
-		expect(execute).toHaveBeenCalledWith("x = 1", expect.objectContaining({ timeoutMs: 300_000 }));
+		expect(execute).toHaveBeenCalledWith(
+			"x = 1",
+			expect.objectContaining({ timeoutMs: (timeoutSeconds ?? 300) * 1000 }),
+		);
+		expect(JSON.stringify(tool.parameters.properties.timeout)).toContain(`default ${timeoutSeconds ?? 300}`);
 	});
 
 	it.each([0, -1, NaN, Infinity, 0.0001, 2_147_483.648])("rejects invalid timeout %s", async (timeout) => {
@@ -385,6 +389,7 @@ describe("IpythonKernelProvisioner", () => {
 	});
 
 	it.each([false, true])("reports timeout recovery without retrying (kernel killed: %s)", async (kernelKilled) => {
+		const timeoutSeconds = kernelKilled ? 900 : 300;
 		const execute = vi.fn<KernelClient["execute"]>().mockResolvedValue({
 			...okExecuteResult(),
 			status: "error",
@@ -392,13 +397,14 @@ describe("IpythonKernelProvisioner", () => {
 			error: { ename: "TimeoutError", evalue: "deadline exceeded", traceback: [] },
 		});
 		const provisioner = { ensure: async () => ({ execute }) } as unknown as IpythonKernelProvisioner;
-		const tool = createIpythonToolDefinition(tempDir, { provisioner });
+		const tool = createIpythonToolDefinition(tempDir, { provisioner, timeoutSeconds });
 		const ctx = {} as ExtensionContext;
 		const result = await tool.execute("timeout", { code: "work()", timeout: 1 }, undefined, undefined, ctx);
 		const text = result.content[0].type === "text" ? result.content[0].text : "";
 		expect(result.details).toMatchObject({ status: "error", errorEname: "TimeoutError", kernelKilled });
 		expect(text).toMatch(/ok[\s\S]*intended[\s\S]*larger.*timeout[\s\S]*background/i);
-		expect(text).toMatch(/1-second limit[\s\S]*default.*300 seconds \(5 minutes\)/i);
+		expect(text).toContain(`${timeoutSeconds} seconds (${timeoutSeconds / 60} minutes)`);
+		expect(execute).toHaveBeenCalledWith("work()", expect.objectContaining({ timeoutMs: 1000 }));
 		expect(text).toMatch(kernelKilled ? /lost/i : /preserved/i);
 		expect(text).toContain(result.details.error?.evalue);
 		expect(execute).toHaveBeenCalledTimes(1);

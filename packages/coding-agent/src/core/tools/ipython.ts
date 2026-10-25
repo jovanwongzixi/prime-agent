@@ -9,6 +9,7 @@ import type { ExtensionContext, ToolDefinition } from "../extensions/types.js";
 import { withKernelBootPermit } from "../kernel/boot-gate.js";
 import type { KernelBootstrapProgressHandler } from "../kernel/bootstrap.js";
 import {
+	DEFAULT_IPYTHON_TIMEOUT_SECONDS,
 	type ExecuteResult,
 	type HostRequestHandlers,
 	type KernelAttachment,
@@ -187,22 +188,32 @@ if _PRIME_AGENT_SKILL_IMPORT_ERRORS:
 `.trim();
 }
 
-const DEFAULT_IPYTHON_TIMEOUT_SECONDS = 300;
+function timeoutMilliseconds(seconds: number): number {
+	const milliseconds = seconds * 1000;
+	if (!Number.isFinite(seconds) || milliseconds < 1 || milliseconds > MAX_EXECUTION_TIMEOUT_MS) {
+		throw new Error(`timeout must be between 0.001 and ${MAX_EXECUTION_TIMEOUT_MS / 1000} seconds`);
+	}
+	return milliseconds;
+}
 
-const ipythonSchema = Type.Object({
-	code: Type.String({
-		description:
-			"Python code to execute in the persistent Python REPL. Use the target project's own environment for project imports, tests, scripts, CLIs, and dependency checks instead of direct kernel imports.",
-	}),
-	timeout: Type.Optional(
-		Type.Number({
-			minimum: 0.001,
-			maximum: MAX_EXECUTION_TIMEOUT_MS / 1000,
+function createIpythonSchema(defaultTimeoutSeconds: number) {
+	timeoutMilliseconds(defaultTimeoutSeconds);
+	return Type.Object({
+		code: Type.String({
 			description:
-				"Execution timeout in seconds (default 300). Increase for intentionally long work, or start a background bash() process and return from the cell.",
+				"Python code to execute in the persistent Python REPL. Use the target project's own environment for project imports, tests, scripts, CLIs, and dependency checks instead of direct kernel imports.",
 		}),
-	),
-});
+		timeout: Type.Optional(
+			Type.Number({
+				minimum: 0.001,
+				maximum: MAX_EXECUTION_TIMEOUT_MS / 1000,
+				description: `Execution timeout in seconds (default ${defaultTimeoutSeconds}). Increase for intentionally long work, or start a background bash() process and return from the cell.`,
+			}),
+		),
+	});
+}
+
+type IpythonSchema = ReturnType<typeof createIpythonSchema>;
 
 const BUSY_KERNEL_WAIT_CHOICE = "Wait and preserve state";
 const BUSY_KERNEL_KILL_CHOICE = "Kill kernel and restart";
@@ -300,7 +311,7 @@ function setWorkingMessage(ctx: ExtensionContext | undefined, message?: string):
 	}
 }
 
-export type IpythonToolInput = Static<typeof ipythonSchema>;
+export type IpythonToolInput = Static<IpythonSchema>;
 
 export interface IpythonToolDetails {
 	durationMs?: number;
@@ -329,6 +340,8 @@ export interface IpythonToolDetails {
 }
 
 export interface IpythonToolOptions {
+	/** Default user-cell timeout in seconds. Per-call timeout arguments take precedence. */
+	timeoutSeconds?: number;
 	/** Python override. Must have prime-agent-runtime installed. */
 	python?: string;
 	env?: Record<string, string>;
@@ -359,7 +372,7 @@ export interface IpythonToolOptions {
 	/** Fires when the kernel's last live background bash() handle settles, so owed continuations can resume. */
 	onBackgroundWorkSettled?: () => void;
 	onLateSentAgentMessage?: (toolCallId: string, message: KernelSentAgentMessage) => void;
-	/** Shared provisioner owning the kernel lifecycle. When provided, the remaining options are ignored. */
+	/** Shared provisioner owning the kernel lifecycle. When provided, kernel startup options are ignored. */
 	provisioner?: IpythonKernelProvisioner;
 }
 
@@ -693,7 +706,9 @@ export function imageBlocksFromAttachments(attachments: readonly KernelAttachmen
 export function createIpythonToolDefinition(
 	cwd: string,
 	options?: IpythonToolOptions,
-): ToolDefinition<typeof ipythonSchema, IpythonToolDetails> {
+): ToolDefinition<IpythonSchema, IpythonToolDetails> {
+	const defaultTimeoutSeconds = options?.timeoutSeconds ?? DEFAULT_IPYTHON_TIMEOUT_SECONDS;
+	const parameters = createIpythonSchema(defaultTimeoutSeconds);
 	const provisioner = options?.provisioner ?? new IpythonKernelProvisioner(cwd, options);
 
 	return {
@@ -704,13 +719,10 @@ export function createIpythonToolDefinition(
 		promptSnippet: "ipython - persistent Python REPL for code, state, and bash() orchestration",
 		// The kernel is single-threaded — pi must not run two ipython calls in parallel within a batch.
 		executionMode: "sequential",
-		parameters: ipythonSchema,
+		parameters,
 		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
-			const timeout = params.timeout ?? DEFAULT_IPYTHON_TIMEOUT_SECONDS;
-			const timeoutMs = timeout * 1000;
-			if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_EXECUTION_TIMEOUT_MS) {
-				throw new Error(`timeout must be between 0.001 and ${MAX_EXECUTION_TIMEOUT_MS / 1000} seconds`);
-			}
+			const timeout = params.timeout ?? defaultTimeoutSeconds;
+			const timeoutMs = timeoutMilliseconds(timeout);
 			let hasWorkingMessage = false;
 			const setToolWorkingMessage = (message?: string) => {
 				setWorkingMessage(ctx, message);
@@ -758,7 +770,7 @@ export function createIpythonToolDefinition(
 							"Inspect its output and state before deciding whether anything needs rerunning.";
 					const evalue = [
 						`This ipython tool call was taking a very long time and exceeded its ${timeout}-second limit.`,
-						`The default ipython timeout is ${DEFAULT_IPYTHON_TIMEOUT_SECONDS} seconds (${DEFAULT_IPYTHON_TIMEOUT_SECONDS / 60} minutes). Set the timeout argument explicitly to change it.`,
+						`The default ipython timeout is ${defaultTimeoutSeconds} seconds (${defaultTimeoutSeconds / 60} minutes). Set the timeout argument explicitly to change it.`,
 						"Was this long runtime intended? If so, after checking what already completed, rerun with a larger timeout,",
 						"or launch the long-running process in the background using a bash() handle and return from the cell.",
 						"Do not blindly repeat work that may already have produced side effects.",
@@ -805,6 +817,6 @@ export function createIpythonToolDefinition(
 	};
 }
 
-export function createIpythonTool(cwd: string, options?: IpythonToolOptions): AgentTool<typeof ipythonSchema> {
+export function createIpythonTool(cwd: string, options?: IpythonToolOptions): AgentTool<IpythonSchema> {
 	return wrapToolDefinition(createIpythonToolDefinition(cwd, options));
 }

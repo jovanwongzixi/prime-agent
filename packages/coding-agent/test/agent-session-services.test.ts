@@ -131,13 +131,13 @@ describe("createAgentSessionFromServices", () => {
 		expect(settingsManager.getTelemetryNoticeShown()).toBe(true);
 	});
 
-	it("honors an explicit daemon-carried telemetry opt-out", async () => {
+	it("honors daemon-carried telemetry opt-out and configured Python timeout", async () => {
 		vi.stubEnv("DO_NOT_TRACK", "0");
 		vi.stubEnv("PRIME_AGENT_TELEMETRY", "1");
 		const tempDir = join(tmpdir(), `pi-session-daemon-telemetry-opt-out-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
 		cleanupPaths.push(tempDir);
-		const settingsManager = SettingsManager.inMemory();
+		const settingsManager = SettingsManager.inMemory({ ipythonTimeoutSeconds: 900 });
 		const services = await createAgentSessionServices({
 			cwd: tempDir,
 			agentDir: tempDir,
@@ -158,6 +158,9 @@ describe("createAgentSessionFromServices", () => {
 		});
 		try {
 			expect(existsSync(join(tempDir, "telemetry.json"))).toBe(false);
+			expect(JSON.stringify(session.getAllTools().find((tool) => tool.name === "ipython")?.parameters)).toContain(
+				"default 900",
+			);
 		} finally {
 			session.dispose();
 		}

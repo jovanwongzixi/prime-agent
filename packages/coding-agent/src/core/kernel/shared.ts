@@ -3,6 +3,7 @@ import type { KernelBootstrapProgressHandler, KernelPythonSkill } from "./bootst
 import type { RestoreResult, SnapshotResult } from "./state-snapshot.js";
 
 export const DEFAULT_MAX_OUTPUT_CHARS = 65536;
+export const DEFAULT_IPYTHON_TIMEOUT_SECONDS = 300;
 export const HOST_REQUEST_SHUTDOWN_TIMEOUT_MS = 5000;
 export const KERNEL_SHUTDOWN_TIMEOUT_MS = 5000;
 export const DEFAULT_SNAPSHOT_DEBOUNCE_MS = 1500;

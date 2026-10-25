@@ -5,6 +5,7 @@ import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
 import { writeFileAtomicSync } from "../utils/atomic-file.js";
+import { DEFAULT_IPYTHON_TIMEOUT_SECONDS, MAX_EXECUTION_TIMEOUT_MS } from "./kernel/shared.js";
 import { MAX_PROVIDER_PAUSE_MS, type ProviderWaitPolicy } from "./provider-retry.js";
 
 const RECENT_MODELS_LIMIT = 20;
@@ -237,6 +238,7 @@ export interface Settings {
 	 */
 	imageModel?: string;
 	autonomous?: AutonomousSettings;
+	ipythonTimeoutSeconds?: number; // Default timeout for Python cells; per-call timeout overrides it
 	shellPath?: string; // Custom shell path (e.g., for Cygwin users on Windows)
 	quietStartup?: boolean;
 	shellCommandPrefix?: string; // Prefix prepended to every bash command (e.g., "shopt -s expand_aliases" for alias support)
@@ -1132,6 +1134,16 @@ export class SettingsManager {
 		const reference = this.settings.imageModel;
 		if (typeof reference !== "string") return undefined;
 		return reference.trim() ? reference.trim() : undefined;
+	}
+
+	getIpythonTimeoutSeconds(): number {
+		const seconds: unknown = this.settings.ipythonTimeoutSeconds;
+		return typeof seconds === "number" &&
+			Number.isFinite(seconds) &&
+			seconds >= 0.001 &&
+			seconds <= MAX_EXECUTION_TIMEOUT_MS / 1000
+			? seconds
+			: DEFAULT_IPYTHON_TIMEOUT_SECONDS;
 	}
 
 	getShellPath(): string | undefined {

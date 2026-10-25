@@ -13,3 +13,10 @@
 - Kept implementation changes in Prime Agent's TypeScript core; left the `prime-agent-runtime` Python library unchanged.
 
 Design: [IPython watchdog implementation plan](ipython-watchdog-design.md).
+
+## 2026-10-25 — Configurable default timeout
+
+- Added `ipythonTimeoutSeconds` to global and project `settings.json`, with project settings taking precedence and 300 seconds retained when omitted or invalid.
+- Kept explicit per-call `timeout` values authoritative; the setting changes the default rather than imposing a maximum.
+- Updated the tool schema and recovery guidance to report the configured default.
+- Added coverage for settings precedence, validation, reload, and configured defaults with per-call overrides.

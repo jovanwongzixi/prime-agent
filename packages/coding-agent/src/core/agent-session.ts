@@ -10826,6 +10826,7 @@ export class AgentSession {
 			configuredBaseToolDefinitions = createAllToolDefinitions(this._cwd, {
 				ipython: {
 					provisioner: this._ipythonKernelProvisioner,
+					timeoutSeconds: this.settingsManager.getIpythonTimeoutSeconds(),
 					commandPrefix: this.settingsManager.getShellCommandPrefix(),
 					shellPath: this.settingsManager.getShellPath(),
 					onLateSentAgentMessage: (toolCallId, message) =>

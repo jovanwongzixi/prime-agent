@@ -304,6 +304,20 @@ available, authenticated model, the bounded wait runs instead.
 | `images.autoResize` | boolean | `true` | Resize images to 2000x2000 max |
 | `images.blockImages` | boolean | `false` | Block all images from being sent to LLM |
 
+### Python Cells
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `ipythonTimeoutSeconds` | number | `300` | Default execution timeout for `ipython` user cells, in seconds. An explicit per-call `timeout` overrides it. |
+
+```json
+{
+  "ipythonTimeoutSeconds": 900
+}
+```
+
+This example allows 15 minutes by default. Project settings override global settings. Values must be finite numbers between `0.001` and `2147483.647` seconds; invalid settings fall back to 300 seconds. This sets a default, not a maximum: an agent can request a longer per-call timeout. The tool schema and timeout guidance report the configured default. Start a new session or use `/reload` after editing settings; an already-running cell keeps its original deadline. Kernel startup and internal requests retain their existing behavior.
+
 ### Shell
 
 | Setting | Type | Default | Description |

@@ -58,12 +58,14 @@ describe("SettingsManager", () => {
 			writeSettings(globalPath, { theme: "dark", extensions: ["/before.ts"] });
 			const manager = SettingsManager.create(projectDir, agentDir);
 
-			writeSettings(globalPath, { theme: "light", extensions: ["/after.ts"], defaultModel: "claude-sonnet" });
+			const updated = { theme: "light", extensions: ["/after.ts"], defaultModel: "claude-sonnet" };
+			writeSettings(globalPath, { ...updated, ipythonTimeoutSeconds: 900 });
 			await manager.reload();
 
 			expect(manager.getTheme()).toBe("light");
 			expect(manager.getExtensionPaths()).toEqual(["/after.ts"]);
 			expect(manager.getDefaultModel()).toBe("claude-sonnet");
+			expect(manager.getIpythonTimeoutSeconds()).toBe(900);
 		});
 
 		// An unparsable file must never be clobbered: the user's settings would be lost.
@@ -175,6 +177,21 @@ describe("SettingsManager", () => {
 
 			expect(read(SettingsManager.create(projectDir, agentDir))).toEqual(expected);
 		});
+	});
+
+	it.each<[unknown, unknown, number]>([
+		[undefined, undefined, 300],
+		[900, 1200, 1200],
+		[900, 0, 300],
+		["900", undefined, 300],
+		[0.0001, undefined, 300],
+		[2_147_483.648, undefined, 300],
+		[0.001, undefined, 0.001],
+		[2_147_483.647, undefined, 2_147_483.647],
+	])("resolves IPython timeout from global %s and project %s", (global, project, expected) => {
+		writeSettings(globalPath, { ipythonTimeoutSeconds: global });
+		writeSettings(projectPath, { ipythonTimeoutSeconds: project });
+		expect(SettingsManager.create(projectDir, agentDir).getIpythonTimeoutSeconds()).toBe(expected);
 	});
 
 	// Telemetry may only ever be narrowed: no project file or runtime override can opt a user back in.
